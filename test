@@ -1,0 +1,1068 @@
+#!/usr/bin/python
+import commands as sp
+import time
+import sys
+start_time_tests=time.time()
+
+f=open("test.config","r")
+var=f.read()
+var=var.split("\n")
+masterIP=var[0].split("=")[1]
+nfsIP=var[1].split("=")[1]
+
+
+if "--debug" in sys.argv:
+	debug=True
+else:
+	debug=False
+
+print("=========verifying if all pods in kube-system are running or not=======")
+
+pods=sp.getoutput("kubectl get pods -n kube-system")
+pods=pods.split("\n")
+flag=0
+for i in range(1,len(pods)-1):
+	if pods[i].split()[2] != 'Running':
+		flag+=1
+if flag == 0:
+	if debug:
+		print("all pods in kube-system are running")
+
+
+print("=====================Initializing tests======================")
+def single_pod_test():
+	print("====================single container pods creation and deletion===========")
+	start_time_test_case=time.time()
+
+	docker_image="nginx"
+
+	fh=open("pod_test.yaml","w")
+	fh.write("""apiVersion: v1
+kind: Pod
+metadata:
+     name: test-pod
+     labels:
+         app-lang: python
+         type: back-end
+spec:
+     containers:
+       - name: test-cont
+         image: {}""".format(docker_image))
+	fh.close()
+
+	tup=sp.getstatusoutput("kubectl create -f pod_test.yaml")
+	if tup[0]==0:
+		if debug:
+			print("====================Single container POD created===============")
+
+	status=sp.getoutput("kubectl get pod test-pod")
+	status=status.split()[-3]
+
+
+	if debug:
+		print("waiting for pod to be running......")
+	while status != "Running":
+	       status=sp.getoutput("kubectl get pods")
+	       status=status.split()[-3]
+	if debug:
+		print("============================POD is running succesfully================")
+
+	tup=sp.getstatusoutput("kubectl delete -f pod_test.yaml")
+	if tup[0]==0:
+		if debug:
+			print("========================POD Deleted===================")
+	print("=========================Test case complete=============")
+
+	test_case_time= time.time()  - start_time_test_case
+	tests_time=time.time() - start_time_tests
+
+	print("Time Taken by test="+str(test_case_time))
+	print("Total Time elapsed="+str(tests_time))
+
+
+	print("==========================================================================================")
+
+
+
+def multi_pod_test():
+	start_time_test_case=time.time()
+	print("=================Multi-Cont Pod test=================")
+	fh=open("multi-cont_test.yaml","w")
+	fh.write("""apiVersion: v1
+kind: Pod
+metadata:
+  name: two-containers
+spec:
+
+  restartPolicy: Never
+
+  volumes:
+   - name: shared-data
+     emptyDir: {}
+
+  containers:
+   - name: nginx-container
+     image: nginx
+     volumeMounts:
+     - name: shared-data
+       mountPath: /usr/share/nginx/html
+     ports:
+      - containerPort: 80
+   - name: debian-container
+     image: debian
+     volumeMounts:
+      - name: shared-data
+        mountPath: /pod-data
+     command: ["/bin/sh"]
+     args: ["-c", "echo Hello from the debian container > /pod-data/index.html"]""")
+
+	fh.close()
+
+	tup=sp.getstatusoutput("kubectl create -f multi-cont_test.yaml")
+	if tup[0]==0:
+		if debug:
+			print("====================POD is created=================")
+	status = sp.getoutput("kubectl get pod  two-containers")
+	status=status.split()[-3]
+
+
+	if debug:
+		print("waiting for pod to be running......")
+	while status != "Running":
+	       status=sp.getoutput("kubectl get pods")
+	       status=status.split()[-3]
+	if debug:
+		print("===============POD is now running====================")
+
+	data=sp.getoutput("kubectl exec -it two-containers   -c nginx-container   cat '/usr/share/nginx/html/index.html'")
+	if data == "Hello from the debian container":
+	    if debug:
+	    	print("==============container inside pod can access shared resources==============")
+	sp.getoutput("kubectl delete -f multi-cont_test.yaml")
+	print("===============Test case complete=====================")
+
+	test_case_time= time.time()  - start_time_test_case
+	tests_time=time.time() - start_time_tests
+
+	print("Time Taken by test="+str(test_case_time))
+	print("Total Time elapsed="+str(tests_time))
+
+
+def namespace():
+	print("==============================================================")
+	print("checking if multiple namespaces can be created or not")
+	start_time_test_case=time.time()
+
+	status=[]
+	j=0
+	status.append(sp.getstatusoutput("kubectl create namespace test1"))
+	status.append(sp.getstatusoutput("kubectl create namespace test2"))
+	status.append(sp.getstatusoutput("kubectl create namespace test3"))
+	for i in range(len(status)):
+	   if status[i][0] != 0:
+	      j+=1
+	      print(i)
+	if j==0:
+	    if debug:
+	    	print("multiple namespaces can be created")
+	else:
+	   if debug:
+	   	print("Please check if there are namespaces already present starting with test")
+
+	sp.getoutput("kubectl delete ns test1")
+	sp.getoutput("kubectl delete ns test2")
+	sp.getoutput("kubectl delete ns test3")
+	if debug:
+		print("==============Namespaces are deleted===============")
+	print("==============Test case complete===================")
+
+
+	test_case_time= time.time()  - start_time_test_case
+	tests_time=time.time() - start_time_tests
+
+	print("Time Taken by test="+str(test_case_time))
+	print("Total Time elapsed="+str(tests_time))
+
+def rs_test():
+	print("==========================================================")
+	print("====================Deploying pods by creating Replica Set=================")
+	start_time_test_case=time.time()
+
+
+	fh=open("rs_test.yaml","w")
+	fh.write("""apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+   name: test-pod
+   labels:
+     app: rs-test
+spec:
+    template:
+       metadata:
+          name: test-pod
+          labels:
+             app: rs-test
+       spec:
+          containers:
+            - name: test-cont
+              image: nginx
+              ports:
+               - containerPort: 80
+    replicas: 3
+    selector:
+      matchLabels:
+        app: rs-test""")
+	fh.close()
+
+	tup=sp.getstatusoutput("kubectl create -f rs_test.yaml")
+	if tup[0]==0:
+		if debug:
+			print("=================Replica set is created==================")
+	else:
+		print("error in creating replica set")
+	pods=sp.getoutput("kubectl get pods")
+	pods=pods.strip().split("\n")
+	pods_status=[]
+	for i in range(len(pods)-1):
+		pods_status.append(pods[i+1].split()[2])
+	if debug:
+		print("waiting for all the pods to be in running state")
+	while pods_status[0]!="Running" or pods_status[1]!="Running" or pods_status[2]!="Running":
+	  pods=sp.getoutput("kubectl get pods")
+	  pods=pods.strip().split("\n")
+	  pods_status=[]
+	  for i in range(len(pods)-1):
+	    pods_status.append(pods[i+1].split()[2])
+	if debug:
+		print("All pods are running")
+
+	pods=sp.getoutput("kubectl get pods")
+	pod_to_be_deleted=pods.split("\n")[1].split()[0]
+	if debug:
+		print("deleting a pod to test self-healing")
+	sp.getoutput("kubectl delete pod {}".format(pod_to_be_deleted))
+	if debug:
+		print("Pod deleted")
+		print("waiting for all pods to be running")
+
+	pods=pods.strip().split("\n")
+	pods_status=['noset']
+	while pods_status[0]!="Running":
+	  pods=sp.getoutput("kubectl get pods")
+	  pods=pods.strip().split("\n")
+	  pods_status=[]
+	  for i in range(len(pods)-1):
+	    pods_status.append(pods[i+1].split()[2])
+	  pods=sp.getoutput("kubectl get pods")
+	if debug:
+		print("================All the pods are running again==============")
+		print("=================Scaling up the pod=========================")
+
+
+
+	tup=sp.getstatusoutput("kubectl scale --replicas=5  rs/test-pod")
+	if tup[0]==0:
+		status=sp.getoutput("kubectl get pods")
+		status=status.split("\n")
+		while status[1].split()[2] != 'Running' or status[2].split()[2] != 'Running' or status[3].split()[2] != 'Running' or    status[4].split()[2] != 'Running'  or status[5].split()[2] != 'Running':
+
+		      status=sp.getoutput("kubectl get pods")
+		      status=status.split("\n")
+		if debug:
+			print("scaled up and running")
+
+			print("================Scaling down the pod========================")
+
+
+	tup=sp.getstatusoutput("kubectl scale --replicas=1  rs/test-pod")
+	if tup[0]==0:
+		status=sp.getoutput("kubectl get pods")
+		status=status.split("\n")
+		while len(status) != 2:
+			status = sp.getoutput("kubectl get pods")
+			status=status.split("\n")
+		if debug:
+			print("scaled down and running")
+			print("=======exposing the replica set============")
+	tup=sp.getstatusoutput("kubectl expose rs/test-pod  --type=NodePort")
+	if tup[0]==0:
+		if debug:
+			print("pod has been exposed")
+		port=sp.getoutput("kubectl get svc test-pod")
+		port=port.split("\n")[1].split(":")[1].split("/")[0]
+		tup=sp.getstatusoutput("curl {}:{}".format(masterIP,port))
+		if tup[0]==0:
+			if debug:
+				print("application is accessible from outside the cluster")
+		else:
+			print("ERROR in accessing the application")
+	sp.getoutput("kubectl delete svc test-pod")		
+	sp.getoutput("kubectl delete -f rs_test.yaml")
+
+	if debug:
+		print("==================Replica set is deleted================")
+	running_pods=""
+	if debug:
+		print("waiting for the pods to be terminated")
+	while len(running_pods)!=19:
+	     running_pods=sp.getoutput("kubectl get pods")
+	if debug:
+		print("=========All pods are terminated automatically============")
+	test_case_time= time.time()  - start_time_test_case
+	tests_time=time.time() - start_time_tests
+
+	print("Time Taken by test="+str(test_case_time))
+	print("Total Time elapsed="+str(tests_time))
+
+def metric_server():
+	print("========================================================")
+	print("=========Checking if metric server is running===========")
+	start_time_test_case=time.time()
+	metric=sp.getoutput("kubectl top nodes")
+	metric_status=metric.split(" ")[0]
+
+	metric_pod=sp.getoutput("kubectl get pods -n kube-system | grep metric")
+	metric_pod_status=metric_pod.split()[2]
+	if metric_pod_status == 'Running':
+		if metric_status == 'NAME':
+		        print("===========Metrics server is working=========")
+	else:
+		print("============Error in metrics server deployment======")
+
+	test_case_time= time.time()  - start_time_test_case
+	tests_time=time.time() - start_time_tests
+
+	print("Time Taken by test="+str(test_case_time))
+	print("Total Time elapsed="+str(tests_time))
+
+def deployment():
+	start_time_test_case=time.time()
+	print("====================================================")
+	print("============Deployment test=========================")
+	fh=open('test-deploy.yaml','w')
+	fh.write("""apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  labels:
+    app: nginx
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.7.9
+        ports:
+        - containerPort: 80
+""")
+	fh.close()
+	tup=sp.getstatusoutput("kubectl create -f test-deploy.yaml")
+	if tup[0]==0:
+		if debug:
+			print("=================Depoyment created===============")
+		status=sp.getoutput("kubectl get deploy/nginx-deployment")
+		status=status.split("\n")	
+		status=status[1].split()[1]
+		while status != '3/3':
+			status=sp.getoutput("kubectl get deploy/nginx-deployment")
+			status=status.split("\n")	
+			status=status[1].split()[1]
+		if debug:
+			print("Deployment up and running")
+			print("deleting replica set to check it's self healing")
+		rs=sp.getoutput("kubectl get rs")
+		rs=rs.split("\n")[1].split()
+		tup=sp.getstatusoutput("kubectl delete rs {}".format(rs[0]))
+		if tup[0]==0:
+			if debug:
+				print("replica set deleted")
+		while rs[3] =='3':
+			rs=sp.getoutput("kubectl get rs")
+			rs=rs.split("\n")[1].split()
+		if debug:
+			print("Replic set is now running again")
+		pods=sp.getoutput("kubectl get pods")
+		pods=pods.split("\n")
+		if debug:
+			print("Waiting for all pods to be running again")
+		while len(pods) != 4:
+			pods=sp.getoutput("kubectl get pods")
+			pods=pods.split("\n")
+		while pods[1].split()[2] != 'Running' or pods[2].split()[2] != 'Running' or pods[3].split()[2] != 'Running':
+			pods=sp.getoutput("kubectl get pods")
+			pods=pods.split("\n")
+		if debug:
+			print("All pods are running again")
+		#print(pods[1].split()[2])
+		if debug:
+			print("scaling up the deployment")
+		sp.getoutput("kubectl scale deploy/nginx-deployment --replicas=5")		
+		deploy=sp.getoutput("kubectl get deploy")
+		deploy=deploy.split("\n")[1].split()
+		while deploy[3] != '5':
+			deploy=sp.getoutput("kubectl get deploy")
+			deploy=deploy.split("\n")[1].split()
+		if debug:
+			print("deployment scaled...")
+			print("Scaling down the deployment")
+		sp.getoutput("kubectl scale deploy/nginx-deployment --replicas=2")
+		pods=sp.getoutput("kubectl get pods")
+		pods=pods.split("\n")
+		while len(pods) != 3:
+			pods=sp.getoutput("kubectl get pods")
+			pods=pods.split("\n")
+		if debug:
+			print("deployment has been scaled down")
+			print("Exposing the deployment to NodePort")
+		sp.getoutput("kubectl expose deploy/nginx-deployment --type=NodePort")
+		port=sp.getoutput("kubectl get svc/nginx-deployment")
+		port=port.split("\n")[1].split(":")[1].split("/")[0]
+		tup=sp.getstatusoutput("curl {}:{}".format(masterIP,port))
+		if tup[0]==0:
+			if debug:
+				print("deployment has been exposed and accessible successfully")
+		else:
+			if debug:
+				print("error while exposing")
+		tup=sp.getstatusoutput("kubectl delete svc/nginx-deployment")
+		if tup[0]==0:
+			if debug:
+				print("service for nginx has been deleted")
+		sp.getoutput("kubectl delete -f test-deploy.yaml")
+		if debug:
+			print("waiting for the pods to be terminated")
+		pods=sp.getoutput("kubectl get pods")
+		while pods != 'No resources found.':
+			pods=sp.getoutput("kubectl get pods")
+	else:
+		if debug:
+			print("error while creating deployment: {}".format(tup[1]))
+	print("==============Test complete=============")
+	test_case_time= time.time()  - start_time_test_case
+	tests_time=time.time() - start_time_tests
+
+	print("Time Taken by test="+str(test_case_time))
+	print("Total Time elapsed="+str(tests_time))
+
+
+def pod_with_probes():
+	start_time_test_case=time.time()
+	fh=open("pod_with_probes.yaml","w")
+	fh.write("""apiVersion: apps/v1beta1
+kind: Deployment
+metadata:
+  name: helloworld-deployment-with-probe
+spec:
+  selector:
+    matchLabels:
+      app: helloworld
+  replicas: 1 # tells deployment to run 1 pods matching the template
+  template: # create pods using pod definition in this template
+    metadata:
+      labels:
+        app: helloworld
+    spec:
+      containers:
+      - name: helloworld
+        image: nginx
+        ports:
+        - containerPort: 80
+        readinessProbe:
+          # length of time to wait for a pod to initialize
+          # after pod startup, before applying health checking
+          initialDelaySeconds: 10
+          # Amount of time to wait before timing out
+          initialDelaySeconds: 1
+          # Probe for http
+          httpGet:
+            # Path to probe
+            path: /
+            # Port to probe
+            port: 80
+        livenessProbe:
+          # length of time to wait for a pod to initialize
+          # after pod startup, before applying health checking
+          initialDelaySeconds: 10
+          # Amount of time to wait before timing out
+          timeoutSeconds: 1
+          # Probe for http
+          httpGet:
+            # Path to probe
+            path: /
+            # Port to probe
+            port: 80""")
+	fh.close()
+	tup=sp.getstatusoutput("kubectl create -f pod_with_probes.yaml")
+	if tup[0]==0:
+		if debug:
+			print("pod with probes is created")
+		pods=sp.getoutput("kubectl get pods")
+		pod_status=pods.split("\n")[1].split()[2]
+		if debug:
+			print("waiting for pod to be in running state")
+		while pod_status != 'Running':
+			pods=sp.getoutput("kubectl get pods")
+			pod_status=pods.split("\n")[1].split()[2]
+		if debug:
+			print("pod is in running status")
+		tup=sp.getstatusoutput("kubectl delete -f pod_with_probes.yaml")
+		if tup[0]==0:
+			if debug:
+				print("pod deleted successfully")
+	else:
+		if debug:
+			print("error in creating pod with probes")
+	test_case_time= time.time()  - start_time_test_case
+	tests_time=time.time() - start_time_tests
+	print("=============Test case completed============")
+	print("Time Taken by test="+str(test_case_time))
+	print("Total Time elapsed="+str(tests_time))
+
+
+
+
+
+def versioning():
+	start_time_test_case=time.time()
+	print("==================Testing upgrading and rollback==============")
+	fh=open("versioning.yaml","w")
+	fh.write("""apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  labels:
+    app: nginx
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.7.9
+        ports:
+        - containerPort: 80""")
+	fh.close()
+	tup=sp.getstatusoutput("kubectl create -f versioning.yaml")
+	if tup[0]==0:
+		if debug:
+			print("Deployment created")
+		rs=sp.getoutput("kubectl get rs")
+		rs=rs.split("\n")[1].split()
+		while rs[3] != '3':
+			rs=sp.getoutput("kubectl get rs")
+			rs=rs.split("\n")[1].split()
+		if debug:
+			print("all instance of app is running of the application")
+		tup=sp.getstatusoutput("kubectl set image deployment/nginx-deployment  nginx=nginx:1.9.1")
+		if tup[0]==0:
+			if debug:
+				print("image of the running container is changed")
+			rs = sp.getoutput("kubectl get rs")
+			rs=rs.split("\n")[2].split()[3]
+			while rs != '3':
+				rs = sp.getoutput("kubectl get rs")
+				rs=rs.split("\n")[2].split()[3]
+			if debug:
+				print("New pods are now running!!")
+				print("going back to previous version")
+			tup=sp.getstatusoutput("kubectl rollout undo deployment/nginx-deployment --to-revision=1")
+		if tup[0]==0:
+			if debug:
+				print("waiting for that pods to be running")
+			rs=sp.getoutput("kubectl get rs")
+			rs=rs.split("\n")[1].split()[3]
+			while rs != '3':
+				rs=sp.getoutput("kubectl get rs")
+				rs=rs.split("\n")[1].split()[3]
+			if debug:
+				print("Pods of previous version are now running")
+		sp.getoutput("kubectl delete -f versioning.yaml")
+		if debug:
+			print("deployment deleted")
+		print("===============Test Complete==============")
+	else:
+		if debug:
+			print("error in creating deployment")
+
+	test_case_time= time.time()  - start_time_test_case
+	tests_time=time.time() - start_time_tests
+	print("=============Test case completed============")
+	print("Time Taken by test="+str(test_case_time))
+	print("Total Time elapsed="+str(tests_time))
+
+
+
+def job_pod():
+	print("=================Creation and deletion of job pod================")
+	fh=open("job.yaml","w")
+	start_time_test_case=time.time()
+	fh.write("""apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pi
+spec:
+  template:
+    spec:
+      containers:
+      - name: pi
+        image: perl
+        command: ["perl",  "-Mbignum=bpi", "-wle", "print bpi(6)"]
+      restartPolicy: Never
+  backoffLimit: 4""")
+	fh.close()
+	tup=sp.getstatusoutput("kubectl create -f job.yaml")
+	if tup[0]==0:
+		if debug:
+			print("Job pod created")
+	pods=sp.getoutput("kubectl get pods")
+	pod_status=pods.split("\n")[1].split()[2]
+	if debug:
+		print("waiting for the job to be completed")
+	while pod_status != 'Completed':
+		pods=sp.getoutput("kubectl get pods")
+		pod_status=pods.split("\n")[1].split()[2]
+	pod_name=pods.split("\n")[1].split()[0]
+	log=sp.getoutput("kubectl logs {}".format(pod_name))
+	if log == '3.14159':
+		if debug:
+			print("Job completed successfully")	
+	tup=sp.getstatusoutput("kubectl delete -f job.yaml")
+	if tup[0]==0:
+		if debug:
+			print("pod deleted successfully")
+	test_case_time= time.time()  - start_time_test_case
+	tests_time=time.time() - start_time_tests
+	print("=============Test case completed============")
+	print("Time Taken by test="+str(test_case_time))
+	print("Total Time elapsed="+str(tests_time))
+
+
+def cronjob_pod():
+	start_time_test_case=time.time()
+	print("========working of cronjob pod==========")
+	fh=open("cronjob.yaml","w")
+	fh.write("""apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: hello
+spec:
+  schedule: "*/1 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: hello
+            image: busybox
+            args:
+            - /bin/sh
+            - -c
+            - date; echo Hello from the Kubernetes cluster
+          restartPolicy: OnFailure""")
+	fh.close()
+	tup=sp.getstatusoutput("kubectl create -f cronjob.yaml")
+	if tup[0]==0:
+		if debug:
+			print("cron job created sucessfully")
+		pod=sp.getoutput("kubectl get pods")
+		if debug:
+			print("waiting 1 minute to check for cron job")
+		if pod=='No resources found.':
+			time.sleep(60)
+		pod=sp.getoutput("kubectl get pods")
+		pod=pod.split("\n")
+		if len(pod)==2:
+			if debug:
+				print("cronjob working properly")
+		tup=sp.getstatusoutput("kubectl delete -f cronjob.yaml")
+		if tup[0]==0:
+			if debug:
+				print("cronjob has been deleted")
+	else:
+		print(tup[1])
+	test_case_time= time.time()  - start_time_test_case
+	tests_time=time.time() - start_time_tests
+	print("=============Test case completed============")
+	print("Time Taken by test="+str(test_case_time))
+	print("Total Time elapsed="+str(tests_time))
+
+
+
+def env_check_cm():
+	start_time_test_case=time.time()
+	print("===============Creation of config map and passing it as Env Var==========")
+	fh=open("conf-env.yaml","w")
+	fh.write("""apiVersion: v1
+kind: Pod
+metadata:
+   name: test-env-cm
+spec:
+  containers:
+     - name: env-test-conf
+       image: bash
+       env:
+         - name: AUTHOR
+           valueFrom:
+              configMapKeyRef:
+                  name: test
+                  key: name
+       command: ["echo"]
+       args: ["$(AUTHOR)"]""")
+	fh.close()
+	tup=sp.getstatusoutput("kubectl create configmap test --from-literal=name=tarun")
+	if tup[0]==0:
+		if debug:
+			print("config map has been created")
+			print("checking if info is saved in clear text or not")
+		name=sp.getoutput("kubectl get cm/test -o yaml")
+		name=name.split("\n")[2].strip().split(":")[1].strip()
+		if name == 'tarun':
+			if debug:
+				print("data is in clear test")
+				print("creating pod with passing this configMap as env var")
+		tup=sp.getstatusoutput("kubectl create -f conf-env.yaml")
+		if tup[0]==0:
+			if debug:
+				print("pod has been created sucessfully")
+			pod=sp.getoutput("kubectl get po/test-env-cm")
+			pod_status=pod.split("\n")[1].split()[2]
+			if debug:
+				print("Waiting for pod to be completed")
+			while pod_status != 'Completed':
+				pod=sp.getoutput("kubectl get po/test-env-cm")
+				pod_status=pod.split("\n")[1].split()[2]
+			if debug:
+				print("pod is completed")
+			log=sp.getoutput("kubectl logs test-env-cm")
+			if log == 'tarun':
+				if debug:
+					print("Env variables is passed correctly inside the pod")
+			else:
+				if debug:
+					print("some errors in passing the env var")
+			if debug:
+				print("deleting the pod and config map")
+			sp.getoutput("kubectl delete cm/test")
+			sp.getoutput("kubectl delete -f conf-env.yaml")
+	else:
+		if debug:
+			print("error in creating config map")
+	test_case_time= time.time()  - start_time_test_case
+	tests_time=time.time() - start_time_tests
+	print("=============Test case completed============")
+	print("Time Taken by test="+str(test_case_time))
+	print("Total Time elapsed="+str(tests_time))
+
+
+
+def env_check_secret():
+	start_time_test_case=time.time()
+	print("===============Creation of secret and passing it as Env Var==========")
+	fh=open("sec-env.yaml","w")
+	fh.write("""apiVersion: v1
+kind: Pod
+metadata:
+   name: test-env-sec
+spec:
+  containers:
+     - name: env-test-sec
+       image: bash
+       env:
+         - name: AUTHOR
+           valueFrom:
+              secretKeyRef:
+                  name: test
+                  key: name
+       command: ["echo"]
+       args: ["$(AUTHOR)"]""")
+	fh.close()
+	tup=sp.getstatusoutput("kubectl create secret generic test --from-literal=name=tarun")
+	if tup[0]==0:
+		if debug:
+			print("secret has been created")
+			print("checking if info is saved encoded or not")
+		name=sp.getoutput("kubectl get secret/test -o yaml")
+		name=name.split("\n")[2].strip().split(":")[1].strip()
+		if name != 'tarun':
+			if debug:
+				print("values in secret are succesfully encoded")
+		tup=sp.getstatusoutput("kubectl create -f sec-env.yaml")
+		if tup[0]==0:
+			if debug:
+				print("pod has been created sucessfully")
+			pod=sp.getoutput("kubectl get po/test-env-sec")
+			pod_status=pod.split("\n")[1].split()[2]
+			if debug:
+				print("Waiting for pod to be completed")
+			while pod_status != 'Completed':
+				pod=sp.getoutput("kubectl get po/test-env-sec")
+				pod_status=pod.split("\n")[1].split()[2]
+			if debug:
+				print("pod is completed")
+			log=sp.getoutput("kubectl logs test-env-sec")
+			if log == 'tarun':
+				if debug:
+					print("Env variables is passed correctly inside the pod")
+			else:
+				if debug:
+					print("some errors in passing the env var")
+			if debug:
+				print("deleting the pod and secret")
+			sp.getoutput("kubectl delete secret/test")
+			sp.getoutput("kubectl delete -f sec-env.yaml")
+	test_case_time= time.time()  - start_time_test_case
+	tests_time=time.time() - start_time_tests
+	print("=============Test case completed============")
+	print("Time Taken by test="+str(test_case_time))
+	print("Total Time elapsed="+str(tests_time))
+
+
+def env_check():
+	start_time_test_case=time.time()
+	print("=================Pod with env variables==============")
+	fh=open("env_pod.yaml","w")
+	fh.write("""apiVersion: v1
+kind: Pod
+metadata:
+   name: test-env
+spec:
+  containers:
+     - name: env-test
+       image: bash
+       env:
+         - name: DEMO
+           value: "Hello"
+       command: ["echo"]
+       args: ["$(DEMO)"]""")
+	fh.close()
+	tup=sp.getstatusoutput("kubectl create -f env_pod.yaml")
+	if tup[0] == 0:
+		if debug:
+			print("pod with enviornment variable is created")
+		pod=sp.getoutput("kubectl get po/test-env")
+		pod_status=pod.split("\n")[1].split()[2]
+		if debug:
+			print("Waiting for pod to be completed")
+		while pod_status != 'Completed':
+			pod=sp.getoutput("kubectl get po/test-env")
+			pod_status=pod.split("\n")[1].split()[2]
+		log=sp.getoutput("kubectl logs test-env")
+		if log == 'Hello':
+			if debug:
+				print("Env variable is successfully passed inside pod")
+		else:
+			if debug:
+				print("Env variable is not correctly passes")
+		if debug:
+			print("Deleting the pod")
+		sp.getoutput("kubectl delete -f env_pod.yaml")
+	else:
+		if debug:
+			print("error in creating pod")
+			print(tup[1])
+	test_case_time= time.time()  - start_time_test_case
+	tests_time=time.time() - start_time_tests
+	print("=============Test case completed============")
+	print("Time Taken by test="+str(test_case_time))
+	print("Total Time elapsed="+str(tests_time))
+
+
+
+def check_limit():
+	start_time_test_case=time.time()
+	print("===========Testing LimitRange==============")
+	fh=open("limits.yaml","w")
+	fh.write("""apiVersion: v1
+kind: LimitRange
+metadata:
+  name: limit
+spec:
+  limits:
+  - max:
+      cpu: "700m"
+      memory: "1Gi"
+    min:
+      cpu: "100m"
+      memory: "100Mi"
+    type: Pod
+  - max:
+      cpu: "1"
+      memory: "1Gi"
+    min:
+      cpu: "50m"
+      memory: "90Mi"
+    default:
+      cpu: "500m"
+      memory: "400Mi"
+    defaultRequest:
+      cpu: "500m"
+      memory: "400Mi"
+    type: Container""")
+	fh.close()
+	fh1=open("pod.yaml","w")
+	fh1.write("""apiVersion: v1
+kind: Pod
+metadata:
+     name: test-pod
+     labels:
+         app-lang: python
+         type: back-end
+spec:
+    containers:
+       - name: test-cont
+         image: nginx
+         resources:
+           requests:
+              memory: '1000Mi'
+              cpu: '2'""")
+	fh1.close()
+	tup=sp.getstatusoutput("kubectl create -f limits.yaml")
+	if tup[0]==0:
+		if debug:
+			print("LimitRange created")
+		tup=sp.getstatusoutput("kubectl get limits limit")
+		tup=sp.getstatusoutput("kubectl create -f pod.yaml")
+		if tup[0]==0:
+			if debug:
+				print("Error in creating limitrange")
+		else:
+			if debug:
+				print("LimitRange is working correctly")
+
+		sp.getoutput("kubectl delete -f limits.yaml")
+		if debug:
+			print("LimitRange deleted")
+	else:
+		print("error in creating the limitrange")
+	test_case_time= time.time()  - start_time_test_case
+	tests_time=time.time() - start_time_tests
+	print("=============Test case completed============")
+	print("Time Taken by test="+str(test_case_time))
+	print("Total Time elapsed="+str(tests_time))
+
+
+
+def check_quota():
+	print("==============Creating quota and checking it===========")
+	start_time_test_case=time.time()
+	fh=open("quota.yaml","w")
+	fh.write("""apiVersion: v1
+kind: ResourceQuota
+metadata:
+    name: my-quota
+spec:
+  hard:
+    cpu: '100'
+    memory: '10Gi'
+    pods: '3'""")
+	fh.close()
+	fh1=open("rs.yaml","w")
+	fh1.write("""apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+     name: test-pod
+     labels:
+       app: python
+       type: back-end
+spec:
+    template:
+       metadata:
+          name: test-pod
+          labels:
+             app-lang: python
+             type: back-end
+       spec:
+          containers:
+              - name: test-cont
+                image: nginx
+    replicas: 3
+    selector:
+       matchLabels:
+          app-lang: python
+          type: back-end""")
+	fh1.close()
+	sp.getoutput("kubectl create -f rs.yaml")
+	tup=sp.getstatusoutput("kubectl create -f quota.yaml")
+	if tup[0]==0:
+		if debug:
+			print("quota has been created")
+		sp.getoutput("kubectl scale rs/test-pod --replicas=5")
+		rs=sp.getoutput("kubectl get rs/test-pod")
+		rs=rs.split("\n")[1].split()[2]
+		if rs != '5':
+			if debug:
+				print("quota is sucessfully created")
+
+	sp.getoutput("kubectl delete -f rs.yaml")
+	sp.getoutput("kubectl delete -f quota.yaml")
+	if debug:
+		print("quota is deleted")
+	test_case_time= time.time()  - start_time_test_case
+	tests_time=time.time() - start_time_tests
+	print("=============Test case completed============")
+	print("Time Taken by test="+str(test_case_time))
+	print("Total Time elapsed="+str(tests_time))
+
+
+
+
+if len(sys.argv) == 1:
+	print("Please specify the tests to be run...")
+elif sys.argv[1] == 'all':
+	single_pod_test()
+	multi_pod_test()
+	pod_with_probes()
+	job_pod()
+	cronjob_pod()
+	versioning()
+	rs_test()
+	deployment()
+	check_limit()
+	check_quota()
+	namespace()
+	metric_server()
+	env_check()
+	env_check_cm()
+	env_check_secret()
+else:
+	for x in sys.argv:
+		if x== 'deployment':
+			deployment()
+		if x == 'pod':
+			single_pod_test()
+			multi_pod_test()			
+                if x=='replicaset':
+			rs_test()
+		if x=='namespace':
+			namespace()
+		if x=='metrics':
+			metric_server()
+		if x=='pod_with_probes':
+			pod_with_probes()
+		if x == 'versioning':
+			versioning()
+		if x == 'job_pod':
+			job_pod()
+		if x == 'cronjob':
+			cronjob_pod()
+		if x == 'limits':
+			check_limit()
+		if x == 'quota':
+			check_quota()
+		if x == 'env':
+			env_check()
+			env_check_cm()
+			env_check_secret()
