@@ -335,6 +335,238 @@ def metric_server():
 	print("Time Taken by test="+str(test_case_time))
 	print("Total Time elapsed="+str(tests_time))
 
+
+def sc_pvc():
+	print("================================================================")
+	print("=========Creation and deletion of storage class=================")
+	print("=========PVC to claim from storage class(dynamic provisioning)==")
+	print("======pod to utilize that pvc and write something in it=========")
+	start_time_test_case=time.time()
+	fh=open("service.yaml","w")
+	fh.write("""kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: nfs-client-provisioner
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: nfs-client-provisioner-runner
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "update", "patch"]
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: run-nfs-client-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: nfs-client-provisioner
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: nfs-client-provisioner-runner
+  apiGroup: rbac.authorization.k8s.io
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: leader-locking-nfs-client-provisioner
+rules:
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: leader-locking-nfs-client-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: nfs-client-provisioner
+    # replace with namespace where provisioner is deployed
+    namespace: default
+roleRef:
+  kind: Role
+  name: leader-locking-nfs-client-provisioner
+  apiGroup: rbac.authorization.k8s.io""")
+	fh.close()
+
+	fh1=open("deployment.yaml","w")
+	fh1.write("""kind: Deployment
+apiVersion: extensions/v1beta1
+metadata:
+  name: nfs-client-provisioner
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: nfs-client-provisioner
+    spec:
+      serviceAccountName: nfs-client-provisioner
+      containers:
+        - name: nfs-client-provisioner
+          image: quay.io/external_storage/nfs-client-provisioner:latest
+          volumeMounts:
+            - name: nfs-client-root
+              mountPath: /persistentvolumes
+          env:
+            - name: PROVISIONER_NAME
+              value: example.com/nfs
+            - name: NFS_SERVER
+              value: {}
+            - name: NFS_PATH
+              value: /test
+      volumes:
+        - name: nfs-client-root
+          nfs:
+            server: 192.168.43.25
+            path: /test""".format(nfsIP))
+	fh1.close()
+	fh2=open("class.yaml","w")
+	fh2.write("""apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: managed-nfs-storage
+provisioner: example.com/nfs
+reclaimPolicy: Delete
+parameters:
+  archiveOnDelete: 'false'""")
+	fh2.close()
+	fh3=open("claim.yaml","w")
+	fh3.write("""kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+   name: nfs
+   annotations:
+      volume.beta.kubernetes.io/storage-class: "managed-nfs-storage"
+spec:
+   accessModes:
+     - ReadWriteMany
+   resources:
+     requests:
+        storage: 1Gi""")
+	fh3.close()
+
+	fh4=open("pod_pvc.yaml","w")
+	fh4.write("""apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-pvc
+spec:
+
+  restartPolicy: Never
+
+  volumes:
+   - name: mypvc
+     persistentVolumeClaim:
+        claimName: nfs
+
+  containers:
+   - name: nginx-container
+     image: nginx
+     volumeMounts:
+     - name: mypvc
+       mountPath: /etc/nginx/html
+     ports:
+      - containerPort: 80
+   - name: debian-container
+     image: debian
+     volumeMounts:
+      - name: mypvc
+        mountPath: /pod-data
+     command: ["/bin/sh"]
+     args: ['-c', 'echo Hello from the debian container > /pod-data/index.html']""")
+	fh4.close()
+	tup=sp.getstatusoutput("kubectl create -f service.yaml")
+	if tup[0]==0:
+		if debug:
+			print("Service account with required RBAC for nfs provisioner has been created")
+			print(tup[1])
+		tup=sp.getstatusoutput("kubectl create -f deployment.yaml")
+		if tup[0]==0:
+			if debug:
+				print("deployment for provisioning the nfs is created")
+				print("waiting for it to be in running state")
+			pod=sp.getoutput("kubectl get pod")
+			pod_status=pod.split("\n")[1].split()[2]
+			while pod_status != 'Running':
+				pod=sp.getoutput("kubectl get pod")
+				pod_status=pod.split("\n")[1].split()[2]
+			if debug:
+				print("nfs-provisioner is in running state now")
+				print("creating storage class")
+			tup=sp.getstatusoutput("kubectl create -f class.yaml")
+			if tup[0]==0:
+				if debug:
+					print("storage class sucessfully created")
+					print("creating a persistent volume claim on the storage class")
+				tup=sp.getstatusoutput("kubectl create -f claim.yaml")
+				if tup[0]==0:
+					if debug:
+						print("claim has been created waiting for it to be bounded")
+				pvc=sp.getoutput("kubectl get pvc nfs")
+				pvc_status=pvc.split("\n")[1].split()[1]
+				while pvc_status != 'Bound':
+					pvc=sp.getoutput("kubectl get pvc nfs")
+					pvc_status=pvc.split("\n")[1].split()[1]
+				print("pvc sucessfully bounded")
+			tup=sp.getstatusoutput("kubectl create -f pod_pvc.yaml")
+			if tup[0]==0:
+				if debug:
+					print("pod with pvc is created")
+					print("waiting for it to be in running state")
+				pod=sp.getoutput("kubectl get pods pod-pvc")
+				pod_status=pod.split("\n")[1].split()[2]
+				while pod_status != 'Running':
+					pod=sp.getoutput("kubectl get pods pod-pvc")
+					pod_status=pod.split("\n")[1].split()[2]
+				if debug:
+					print("pod is created and attached to pvc")
+			sp.getoutput("kubectl delete -f pod_pvc.yaml")
+			if debug:
+				print("Pod has been deleted")
+	tup=sp.getstatusoutput("kubectl delete pvc nfs")
+	if tup[0]==0:
+		if debug:
+			print("pvc has been deleted")
+	tup=sp.getstatusoutput("kubectl delete -f class.yaml")
+	if tup[0]==0:	
+		if debug:
+			print("storage class has been deleted")
+
+	tup=sp.getstatusoutput("kubectl delete -f deployment.yaml")
+	if tup[0]==0:
+		if debug:
+			print("Deployment for nfs-provisioner is deleted")
+
+	tup=sp.getstatusoutput("kubectl delete -f service.yaml")
+	if tup[0]==0:
+		if debug:
+			print("Service account and other rbacs are deleted")
+	print("================TEST case Completed==========")
+
+	test_case_time= time.time()  - start_time_test_case
+	tests_time=time.time() - start_time_tests
+
+	print("Time Taken by test="+str(test_case_time))
+	print("Total Time elapsed="+str(tests_time))
+
+
 def deployment():
 	start_time_test_case=time.time()
 	print("====================================================")
@@ -1030,6 +1262,7 @@ elif sys.argv[1] == 'all':
 	versioning()
 	rs_test()
 	deployment()
+	sc_pvc()
 	check_limit()
 	check_quota()
 	namespace()
@@ -1066,3 +1299,5 @@ else:
 			env_check()
 			env_check_cm()
 			env_check_secret()
+		if x == 'storageclass':
+			sc_pvc()
