@@ -9,7 +9,7 @@ var=f.read()
 var=var.split("\n")
 masterIP=var[0].split("=")[1]
 nfsIP=var[1].split("=")[1]
-
+nfsPATH=var[2].split("=")[1]
 
 if "--debug" in sys.argv:
 	debug=True
@@ -428,14 +428,14 @@ spec:
             - name: PROVISIONER_NAME
               value: example.com/nfs
             - name: NFS_SERVER
-              value: {}
+              value: {0}
             - name: NFS_PATH
-              value: /test
+              value: {1}
       volumes:
         - name: nfs-client-root
           nfs:
-            server: 192.168.43.25
-            path: /test""".format(nfsIP))
+            server: {0}
+            path: {1}""".format(nfsIP,nfsPATH))
 	fh1.close()
 	fh2=open("class.yaml","w")
 	fh2.write("""apiVersion: storage.k8s.io/v1
@@ -524,7 +524,8 @@ spec:
 				while pvc_status != 'Bound':
 					pvc=sp.getoutput("kubectl get pvc nfs")
 					pvc_status=pvc.split("\n")[1].split()[1]
-				print("pvc sucessfully bounded")
+				if debug:
+					print("pvc sucessfully bounded")
 			tup=sp.getstatusoutput("kubectl create -f pod_pvc.yaml")
 			if tup[0]==0:
 				if debug:
@@ -537,6 +538,35 @@ spec:
 					pod_status=pod.split("\n")[1].split()[2]
 				if debug:
 					print("pod is created and attached to pvc")
+					print("Checking if data is present in nfs server")
+					print("creating directory locally and mounting to nfs to check file")
+				tup=sp.getstatusoutput("mkdir /k8s-nfs")
+				if tup[0]==0:
+					tup=sp.getstatusoutput("mount {}:{}   /k8s-nfs".format(nfsIP,nfsPATH))
+					if tup[0]==0:
+						if debug:
+							print("Successfully mounted on local directory")
+						pv=sp.getoutput("kubectl get pv")
+						pv_name=pv.split("\n")[1].split()[0]
+						tup=sp.getstatusoutput("cat /k8s-nfs/default-nfs-{}/index.html".format(pv_name))
+						if tup[0]==0:
+							if debug:
+								print("File is successfully created in nfs")
+								print("unmounting local directory")
+							sp.getoutput("umount /k8s-nfs")
+							sp.getoutput("rmdir /k8s-nfs")
+							if debug:
+								print("directory deleted")
+						else:
+							if debug:
+								print("Error...file not present in nfs")
+					else:
+						if debug:
+							print("error in mounting")
+				else:
+					if debug:
+						print("Error in creating the directory")
+
 			sp.getoutput("kubectl delete -f pod_pvc.yaml")
 			if debug:
 				print("Pod has been deleted")
@@ -758,6 +788,54 @@ spec:
 	print("Total Time elapsed="+str(tests_time))
 
 
+
+
+def latency():
+	start_time_test_case=time.time()
+	print("==================Testing Latency of nfs server==============")
+
+	tup=sp.getstatusoutput("mkdir /nfs_test")
+	if tup[0]==0:
+		if debug:
+			print("Directory created for latency test")
+		tup=sp.getstatusoutput("mount {}:{}   /nfs_test".format(nfsIP,nfsPATH))
+		if tup[0]==0:
+			if debug:
+				print("Directory sucessfully mounted")
+				print("creating file of 1Gi for uploading")
+			tup=sp.getstatusoutput("dd if=/dev/zero  of=/try.txt count=1024  bs=1048576")
+			if tup[0]==0:
+				if debug:
+					print("File created")
+				start_time=time.time()
+				tup=sp.getstatusoutput("cp /try.txt  /nfs_test")
+				if tup[0]==0:
+					if debug:
+						print("File sucessfully copied in nfs server")
+				end_time=time.time()
+				time_taken=end_time-start_time
+				print("Time taken in Transfering 1Gi of data: "+str(time_taken))
+				sp.getoutput("rm -f /nfs_test/try.txt")
+				if debug:
+					print("File deleted from nfs directory")
+				sp.getoutput("rm -f /try.txt") 
+				if debug:
+					print("File removed from local system")
+				sp.getoutput("umount /nfs_test")
+				sp.getoutput("rmdir /nfs_test")
+				if debug:
+					print("directory removed and deleted")
+					print("======Test case sucessfull=====")
+		else:
+			print("error in mounting the directory")
+	else:
+		print("Error in creating the directory")
+
+	test_case_time= time.time()  - start_time_test_case
+	tests_time=time.time() - start_time_tests
+	print("=============Test case completed============")
+	print("Time Taken by test="+str(test_case_time))
+	print("Total Time elapsed="+str(tests_time))
 
 
 
@@ -1263,6 +1341,7 @@ elif sys.argv[1] == 'all':
 	rs_test()
 	deployment()
 	sc_pvc()
+	latency()
 	check_limit()
 	check_quota()
 	namespace()
@@ -1301,3 +1380,5 @@ else:
 			env_check_secret()
 		if x == 'storageclass':
 			sc_pvc()
+		if x == 'latency':
+			latency()
