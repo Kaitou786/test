@@ -10,7 +10,7 @@ var=var.split("\n")
 masterIP=var[0].split("=")[1]
 nfsIP=var[1].split("=")[1]
 nfsPATH=var[2].split("=")[1]
-
+netmask=int(var[3].split("=")[1])
 if "--debug" in sys.argv:
 	debug=True
 else:
@@ -313,6 +313,130 @@ spec:
 
 	print("Time Taken by test="+str(test_case_time))
 	print("Total Time elapsed="+str(tests_time))
+
+
+def decToBin(num):
+	num=bin(num)
+	num=num[2:len(num)]
+	length=len(num)
+	rest=""
+	while length < 8:
+		rest=rest+"0"
+		length+=1
+	rq_num=rest+num
+	return rq_num
+
+def network_layer():
+	print("========================================================")
+	print("======Verifying if pods run on same network layer=======")
+	start_time_test_case=time.time()
+	fh=open("rs_test.yaml","w")
+	fh.write("""apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+   name: test-pod
+   labels:
+     app: rs-test
+spec:
+    template:
+       metadata:
+          name: test-pod
+          labels:
+             app: rs-test
+       spec:
+          containers:
+            - name: test-cont
+              image: nginx
+              ports:
+               - containerPort: 80
+    replicas: 4
+    selector:
+      matchLabels:
+        app: rs-test""")
+	fh.close()
+
+	tup=sp.getstatusoutput("kubectl create -f rs_test.yaml")
+	if tup[0]==0:
+		if debug:
+			print("Pods on all nodes are created")
+			print("Waiting for all pods to be in running status")
+		pods=sp.getoutput("kubectl get pods")
+		pods=pods.split("\n")
+		pods_status=[]
+		for i in range(len(pods)-1):
+			pods_status.append(pods[i+1].split()[2])
+		while pods_status[0]!="Running" or pods_status[1]!="Running" or pods_status[2]!="Running" or pods_status[3]!="Running":
+		  pods=sp.getoutput("kubectl get pods")
+		  pods=pods.strip().split("\n")
+		  pods_status=[]
+		  for i in range(len(pods)-1):
+		    pods_status.append(pods[i+1].split()[2]) 
+		if debug:
+			print("all pods are running now")
+	if debug:
+		print("getting ips of all the pods")
+
+	pods=sp.getoutput("kubectl get pods -o wide")
+	pods=pods.split("\n")
+	pod_ip1=pods[1].split()[5]
+	pod_ip2=pods[2].split()[5]
+	pod_ip3=pods[3].split()[5]
+	pod_ip4=pods[4].split()[5]
+
+	pod_ip1=pod_ip1.split(".")
+	pod_ip2=pod_ip2.split(".")
+	pod_ip3=pod_ip3.split(".")
+	pod_ip4=pod_ip4.split(".")
+
+	pod_ip1_oc1=pod_ip1[0]
+	pod_ip1_oc2=pod_ip1[1]
+	pod_ip1_oc3=pod_ip1[2]
+	pod_ip1_oc4=pod_ip1[3]
+
+
+	pod_ip2_oc1=pod_ip2[0]
+	pod_ip2_oc2=pod_ip2[1]
+	pod_ip2_oc3=pod_ip2[2]
+	pod_ip2_oc4=pod_ip2[3]
+
+
+	pod_ip3_oc1=pod_ip3[0]
+	pod_ip3_oc2=pod_ip3[1]
+	pod_ip3_oc3=pod_ip3[2]
+	pod_ip3_oc4=pod_ip3[3]
+
+
+	pod_ip4_oc1=pod_ip4[0]
+	pod_ip4_oc2=pod_ip4[1]
+	pod_ip4_oc3=pod_ip4[2]
+	pod_ip4_oc4=pod_ip4[3]
+
+	if debug:
+		print("converting all ips in 32 bit addresses")
+	pod_ip1_bin=str(decToBin(int(pod_ip1_oc1)))+str(decToBin(int(pod_ip1_oc2)))+str(decToBin(int(pod_ip1_oc3)))+str(decToBin(int(pod_ip1_oc4))) 
+	pod_ip2_bin=str(decToBin(int(pod_ip2_oc1)))+str(decToBin(int(pod_ip2_oc2)))+str(decToBin(int(pod_ip2_oc3)))+str(decToBin(int(pod_ip2_oc4)))
+	pod_ip3_bin=str(decToBin(int(pod_ip3_oc1)))+str(decToBin(int(pod_ip3_oc2)))+str(decToBin(int(pod_ip3_oc3)))+str(decToBin(int(pod_ip3_oc4)))
+	pod_ip4_bin=str(decToBin(int(pod_ip4_oc1)))+str(decToBin(int(pod_ip4_oc2)))+str(decToBin(int(pod_ip4_oc3)))+str(decToBin(int(pod_ip4_oc4)))
+
+
+	if pod_ip1_bin[0:netmask] == pod_ip2_bin[0:netmask] == pod_ip3_bin[0:netmask] == pod_ip4_bin[0:netmask]:
+		print("===========All pods on different nodes are on same network layer==========")
+	if debug:
+		print("deleting pods")
+	sp.getoutput("kubectl delete rs/test-pod")
+	running_pods=""
+	if debug:
+		print("waiting for the pods to be terminated")
+	while len(running_pods)!=19:
+	     running_pods=sp.getoutput("kubectl get pods")
+	if debug:
+		print("=========All pods are terminated============")
+	print("============Test case complete===================")
+	test_case_time= time.time()  - start_time_test_case
+	tests_time=time.time() - start_time_tests
+
+	print("Time Taken by test="+str(test_case_time))
+	print("Total Time elapsed="+str(tests_time))	
 
 def metric_server():
 	print("========================================================")
@@ -1332,6 +1456,7 @@ spec:
 if len(sys.argv) == 1:
 	print("Please specify the tests to be run...")
 elif sys.argv[1] == 'all':
+	network_layer()
 	single_pod_test()
 	multi_pod_test()
 	pod_with_probes()
@@ -1382,3 +1507,5 @@ else:
 			sc_pvc()
 		if x == 'latency':
 			latency()
+		if x == 'network':
+			network_layer()
